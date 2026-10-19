@@ -33,8 +33,8 @@ def main() -> int:
     failures: list[str] = []
     with tempfile.TemporaryDirectory() as temp_dir:
         tmp = Path(temp_dir)
-        oem_payload = ce.to_payload(ce.parse_file(ROOT / "fixtures" / "synthetic_free_return.oem"), 240)
-        csv_payload = ce.to_payload(ce.parse_file(ROOT / "fixtures" / "synthetic_free_return.csv"), 240)
+        oem_payload = build_viewer.canonical(ce.to_payload(ce.parse_file(ROOT / "fixtures" / "synthetic_free_return.oem"), 240))
+        csv_payload = build_viewer.canonical(ce.to_payload(ce.parse_file(ROOT / "fixtures" / "synthetic_free_return.csv"), 240))
     if oem_payload["samples"] != csv_payload["samples"]:
         failures.append("OEM and CSV replay disagree")
     if oem_payload["gates"]["status"] != "pass":

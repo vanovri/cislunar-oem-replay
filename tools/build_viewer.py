@@ -34,6 +34,21 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def canonical(value):
+    """Round floats so the embedded JSON is byte-stable across platforms.
+
+    libm implementations can differ by one ULP; three decimals is far finer than
+    any visual or teaching requirement and removes the platform noise.
+    """
+    if isinstance(value, float):
+        return round(value, 3)
+    if isinstance(value, dict):
+        return {key: canonical(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [canonical(item) for item in value]
+    return value
+
+
 def render() -> tuple[str, dict]:
     template = TEMPLATE.read_text(encoding="utf-8")
     three_source = THREE.read_text(encoding="utf-8")
@@ -42,7 +57,7 @@ def render() -> tuple[str, dict]:
     if "</script" in three_source.lower():
         raise SystemExit("three.js source contains a script terminator")
 
-    payload = ce.to_payload(ce.parse_file(OEM), track_points=TRACK_POINTS)
+    payload = canonical(ce.to_payload(ce.parse_file(OEM), track_points=TRACK_POINTS))
     if payload["gates"]["status"] != "pass":
         raise SystemExit("referee gates failed; refusing to build the viewer")
     embedded = json.dumps(payload, ensure_ascii=True, allow_nan=False).replace("</", "<\\/")
