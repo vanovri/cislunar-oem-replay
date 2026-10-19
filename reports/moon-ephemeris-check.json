@@ -1,0 +1,55 @@
+{
+  "source": "JPL Horizons API, target 301, centre 500@399, ICRF, KM-S",
+  "method": "truncated ELP2000-82B series (Meeus) with precession to J2000",
+  "limit_km": 100.0,
+  "passed": true,
+  "max_error_km": 34.54,
+  "checks": [
+    {
+      "epoch_utc": "2026-04-02T00:00:00Z",
+      "computed_km": [
+        -385839.519,
+        -60029.481,
+        -46894.916
+      ],
+      "horizons_icrf_km": [
+        -385833.8066617213,
+        -60038.52669098664,
+        -46890.7172753297
+      ],
+      "error_km": 11.49,
+      "under_limit": true
+    },
+    {
+      "epoch_utc": "2026-04-06T06:00:00Z",
+      "computed_km": [
+        -183785.392,
+        -314309.576,
+        -175779.788
+      ],
+      "horizons_icrf_km": [
+        -183774.3982713328,
+        -314326.6431395597,
+        -175751.8418071775
+      ],
+      "error_km": 34.54,
+      "under_limit": true
+    },
+    {
+      "epoch_utc": "2026-04-10T00:00:00Z",
+      "computed_km": [
+        120306.125,
+        -338760.028,
+        -177106.224
+      ],
+      "horizons_icrf_km": [
+        120306.6445915195,
+        -338769.8714550657,
+        -177114.4085490945
+      ],
+      "error_km": 12.81,
+      "under_limit": true
+    }
+  ],
+  "notes": "UTC input vs TDB reference epochs contributes up to ~70 km; not a navigation-grade comparison."
+}

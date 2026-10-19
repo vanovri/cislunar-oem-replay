@@ -1,0 +1,51 @@
+{
+  "ok": true,
+  "failures": [],
+  "inputs": {
+    "oem": "fixtures/synthetic_free_return.oem",
+    "csv": "fixtures/synthetic_free_return.csv",
+    "vectors": 30
+  },
+  "oem_csv_identical": true,
+  "provenance": {
+    "kind": "SYNTHETIC_TEACHING_PROFILE_V1",
+    "notice": "Synthetic teaching profile unless stated otherwise; not an authenticated NASA product."
+  },
+  "gates": {
+    "status": "pass",
+    "failures": [],
+    "earth_clearance_km": 100.0,
+    "lunar_clearance_km": 100.0,
+    "meaning": "Kinematic clearance screen only; not a collision probability or mission design review."
+  },
+  "summary": {
+    "duration_days": 9.2,
+    "min_earth_altitude_km": 199.86300014624703,
+    "min_moon_altitude_km": 7262.599999646338,
+    "max_earth_distance_km": 417069.89066867385,
+    "max_speed_kms": 10.740019583199139,
+    "earth_two_body_energy_spread_km2_s2": 63.373513805882396
+  },
+  "track": {
+    "points": 600,
+    "min_earth_altitude_km": 199.86300014624703,
+    "min_moon_altitude_km": 7275.696567499788,
+    "max_speed_kms": 10.740019583199139
+  },
+  "viewer": {
+    "file": "cislunar_replay.html",
+    "bytes": 1007384,
+    "sha256": "f230ab514e0a0315353c6251d030a28c28bcc685a53652e2ec3c447d50453c7f",
+    "three_version": "0.128.0",
+    "three_sha256": "9274bbcec8d96168626c732b5d31c775aa8cfb7eaa0599bec0c175908a2c1ce2",
+    "embedded_payload_matches": true,
+    "external_assets": false,
+    "network_fetch": false
+  },
+  "claims": {
+    "authenticated_nasa_data": false,
+    "propagated_trajectory": false,
+    "time_dependent_energy_conservation": false,
+    "note": "Synthetic reference geometry with spline-derived velocities. Clearance and energy values are diagnostics, not mission analysis."
+  }
+}

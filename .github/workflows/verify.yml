@@ -1,0 +1,35 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Referee tests
+        run: python -m pytest -q
+      - name: Viewer is reproducible
+        run: python tools/build_viewer.py --check
+      - name: Lunar ephemeris spot-check
+        run: python tools/check_ephemeris.py
+      - name: Verification report
+        run: python tools/verify.py
+      - name: Package release
+        run: python tools/package_release.py
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification
+          path: |
+            reports/verification.json
+            reports/moon-ephemeris-check.json
+            dist/*.zip
+            dist/SHA256SUMS-*.txt

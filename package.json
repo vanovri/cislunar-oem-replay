@@ -1,0 +1,13 @@
+{
+  "name": "cislunar-replay-qa",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Browser QA harness for the standalone cislunar replay viewer.",
+  "type": "module",
+  "scripts": {
+    "qa": "node tools/browser_qa.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

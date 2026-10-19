@@ -1,0 +1,10 @@
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+dist/
+tmp/
+.DS_Store
+Thumbs.db
+data/from_csv.json

@@ -1,0 +1,41 @@
+{
+  "viewer": "cislunar_replay.html",
+  "viewer_sha256": "f230ab514e0a0315353c6251d030a28c28bcc685a53652e2ec3c447d50453c7f",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "webgl": {
+    "ready": true,
+    "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+    "three": "128"
+  },
+  "initial": {
+    "index": 10,
+    "phase": "Outbound coast",
+    "t_s": 13270.116861435727
+  },
+  "flyby": {
+    "index": 296,
+    "moonAltitudeHud": "7,276km"
+  },
+  "cameras": {
+    "chase": "chase",
+    "moon": "moon"
+  },
+  "scrubMidpoint": {
+    "index": 300,
+    "t_s": 398103.5058430718,
+    "met": "T+ 4d 14h 35m",
+    "phase": "Lunar flyby · closest 8,359 km altitude",
+    "earth": "414,753km",
+    "moon": "10,096km"
+  },
+  "consoleErrors": [],
+  "screenshots": [
+    "preview.png",
+    "preview-flyby.png",
+    "preview-chase.png",
+    "preview-moon.png"
+  ]
+}
