@@ -36,7 +36,9 @@
     "failures": [],
     "earth_clearance_km": 100.0,
     "lunar_clearance_km": 100.0,
-    "meaning": "Kinematic clearance screen only; not a collision probability or mission design review."
+    "earth_coverage": "Entire cubic Hermite spans using conservative convex-hull bounds; unresolved cases fail",
+    "moon_coverage": "OEM nodes only; not continuous lunar collision clearance",
+    "meaning": "Kinematic teaching screen only. Lunar checks are sampled, not continuous. Not a collision probability or mission design review."
   },
   "samples": [
     {

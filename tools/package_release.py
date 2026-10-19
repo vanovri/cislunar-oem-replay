@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 ZIP_PATH = ROOT / "dist" / f"cislunar-oem-replay-v{VERSION}.zip"
 SUMS_PATH = ROOT / "dist" / f"SHA256SUMS-v{VERSION}.txt"
 FIXED_TIME = (2026, 10, 19, 0, 0, 0)
@@ -31,7 +31,7 @@ FILES = [
     "package.json",
     "reports/moon-ephemeris-check.json",
     "reports/verification.json",
-    "tests/test_cislunar_ephemeris.py",
+    "tests/test_cislunar_ephemeris.py", "tests/test_continuous_earth.py", ".github/workflows/verify.yml",
     "tools/browser_qa.mjs",
     "tools/build_viewer.py",
     "tools/check_ephemeris.py",

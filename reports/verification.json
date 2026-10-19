@@ -16,7 +16,9 @@
     "failures": [],
     "earth_clearance_km": 100.0,
     "lunar_clearance_km": 100.0,
-    "meaning": "Kinematic clearance screen only; not a collision probability or mission design review."
+    "earth_coverage": "Entire cubic Hermite spans using conservative convex-hull bounds; unresolved cases fail",
+    "moon_coverage": "OEM nodes only; not continuous lunar collision clearance",
+    "meaning": "Kinematic teaching screen only. Lunar checks are sampled, not continuous. Not a collision probability or mission design review."
   },
   "summary": {
     "duration_days": 9.2,
@@ -34,8 +36,8 @@
   },
   "viewer": {
     "file": "cislunar_replay.html",
-    "bytes": 905052,
-    "sha256": "e2d49c29c17d47cdee42fd7bc070f06b66c74de9625857c5a3223887ec57377e",
+    "bytes": 905279,
+    "sha256": "6b1729346f6f57b2382a6d076c5b93df2f9760d19ede675b434a9cac622a8acb",
     "three_version": "0.128.0",
     "three_sha256": "9274bbcec8d96168626c732b5d31c775aa8cfb7eaa0599bec0c175908a2c1ce2",
     "embedded_payload_matches": true,

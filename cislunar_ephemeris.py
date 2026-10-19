@@ -426,11 +426,48 @@ def summarize(trajectory: Trajectory) -> dict:
     }
 
 
+def earth_segment_clear(left: State, right: State) -> bool:
+    """Conservative cubic-Bezier convex-hull screen across an entire Hermite span.
+
+    AABB lower bounds outside the exclusion sphere certify each subcurve. An
+    unresolved near-tangent case fails closed after bounded subdivision.
+    """
+    dt = right.t_s - left.t_s
+    controls = [left.r, tuple(left.r[i] + dt * left.v[i] / 3 for i in range(3)),
+                tuple(right.r[i] - dt * right.v[i] / 3 for i in range(3)), right.r]
+    radius = R_EARTH_KM + MIN_CLEARANCE_KM
+    stack = [(controls, 0)]
+    visits = 0
+    def midpoint(a, b):
+        return tuple((a[i] + b[i]) / 2 for i in range(3))
+    while stack:
+        curve, depth = stack.pop()
+        visits += 1
+        lower_squared = 0.0
+        for axis in range(3):
+            low, high = min(p[axis] for p in curve), max(p[axis] for p in curve)
+            nearest = low if low > 0 else high if high < 0 else 0.0
+            lower_squared += nearest * nearest
+        if lower_squared > radius * radius + 1e-6:
+            continue
+        if any(sum(value * value for value in p) < radius * radius for p in [curve[0], curve[-1]]):
+            return False
+        if depth >= 24 or visits >= 100_000:
+            return False
+        a, b, c = midpoint(curve[0], curve[1]), midpoint(curve[1], curve[2]), midpoint(curve[2], curve[3])
+        d, e = midpoint(a, b), midpoint(b, c)
+        f = midpoint(d, e)
+        stack.extend([([curve[0], a, d, f], depth + 1), ([f, e, c, curve[3]], depth + 1)])
+    return True
+
+
 def gates(trajectory: Trajectory) -> dict:
     summary = summarize(trajectory)
     failures = []
     if summary["min_earth_altitude_km"] < MIN_CLEARANCE_KM:
         failures.append(f"Earth clearance below {MIN_CLEARANCE_KM:g} km")
+    elif not all(earth_segment_clear(left, right) for left, right in zip(trajectory.states, trajectory.states[1:])):
+        failures.append('Earth clearance not certified between OEM nodes')
     if summary["min_moon_altitude_km"] < MIN_CLEARANCE_KM:
         failures.append(f"lunar clearance below {MIN_CLEARANCE_KM:g} km")
     return {
@@ -438,7 +475,9 @@ def gates(trajectory: Trajectory) -> dict:
         "failures": failures,
         "earth_clearance_km": MIN_CLEARANCE_KM,
         "lunar_clearance_km": MIN_CLEARANCE_KM,
-        "meaning": "Kinematic clearance screen only; not a collision probability or mission design review.",
+        "earth_coverage": 'Entire cubic Hermite spans using conservative convex-hull bounds; unresolved cases fail',
+        "moon_coverage": 'OEM nodes only; not continuous lunar collision clearance',
+        "meaning": "Kinematic teaching screen only. Lunar checks are sampled, not continuous. Not a collision probability or mission design review.",
     }
 
 

@@ -63,7 +63,7 @@ python cislunar_ephemeris.py --csv fixtures/synthetic_free_return.csv --out data
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 43 passed |
+| `pytest` | 45 passed |
 | OEM vs CSV replay | identical samples |
 | Gate status | pass |
 | Minimum Earth altitude (track) | 199.9 km |
@@ -116,3 +116,11 @@ This distinction is deliberate: the tool demonstrates data ingestion, validation
 All trajectory data is invented for teaching, labelled `SYNTHETIC_TEACHING_PROFILE_V1`. The lunar ephemeris is computed locally from published series. No authenticated NASA product is redistributed.
 
 MIT — see [LICENSE](LICENSE).
+
+## Clearance crosscheck in 0.2.0
+
+Earlier gates checked OEM nodes only. The Earth gate now subdivides the exact cubic Hermite path into Bezier subcurves and uses conservative convex-hull AABB lower bounds against the Earth-plus-100-km sphere. A hidden between-node collision or an unresolved near-tangent case fails the gate. This is a floating-point geometric screen, not interval-arithmetic or flight-dynamics certification.
+
+Lunar checks still cover OEM nodes only. They do not certify continuous moving-Moon clearance. This coverage limit is explicit in the exported gate report. A sampled pass must not be presented as a safe mission trajectory. Fixtures remain synthetic; the scene is unchanged.
+
+Two audit regressions cover safe endpoints with an Earth-intersecting interior, a stationary safe span and an unresolved tangent. Current total: 45 tests. Earlier browser screenshots describe the unchanged scene from 0.1.0.
