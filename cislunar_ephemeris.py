@@ -14,13 +14,22 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import itertools
 import json
+import logging
 import math
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, TypeGuard
+
+logger = logging.getLogger(__name__)
+
+Vec3 = tuple[float, float, float]
+CubicCurve = tuple[Vec3, Vec3, Vec3, Vec3]
 
 MU_EARTH_KM3_S2 = 398600.4418
 MU_MOON_KM3_S2 = 4902.800066
@@ -29,11 +38,16 @@ R_MOON_KM = 1737.4
 MIN_CLEARANCE_KM = 100.0
 MAX_ABS_POSITION_KM = 10_000_000.0
 MAX_ABS_VELOCITY_KMS = 100.0
+MAX_INPUT_BYTES = 5_000_000
+MIN_TRACK_POINTS = 2
+MAX_TRACK_POINTS = 100_000
 MIN_VECTORS = 3
+
 SUPPORTED_OBJECT_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 EPOCH_RE = re.compile(
     r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$"
 )
+PROVENANCE_RE = re.compile(r"^PROVENANCE\s*:\s*(.+)$", re.IGNORECASE)
 REQUIRED_META = ("OBJECT_NAME", "OBJECT_ID", "CENTER_NAME", "REF_FRAME", "TIME_SYSTEM")
 FORBIDDEN_BLOCKS = ("COVARIANCE_START", "COVARIANCE_STOP", "META_START_2")
 CSV_COLUMNS = ("epoch", "x_km", "y_km", "z_km", "vx_kms", "vy_kms", "vz_kms")
@@ -43,18 +57,42 @@ CSV_COLUMNS = ("epoch", "x_km", "y_km", "z_km", "vx_kms", "vy_kms", "vz_kms")
 class State:
     epoch: datetime
     t_s: float
-    r: tuple[float, float, float]
-    v: tuple[float, float, float]
+    r: Vec3
+    v: Vec3
 
 
 @dataclass(frozen=True)
 class Trajectory:
-    metadata: dict
+    metadata: dict[str, str]
     provenance: str
     states: tuple[State, ...]
 
 
+def _is_str(value: object) -> TypeGuard[str]:
+    return type(value) is str
+
+
+def _is_real_number(value: object) -> TypeGuard[int | float]:
+    return type(value) in (int, float)
+
+
+def _is_exact_int(value: object) -> TypeGuard[int]:
+    return type(value) is int
+
+
+def _is_datetime_instance(value: object) -> TypeGuard[datetime]:
+    return type(value) is datetime or (
+        isinstance(value, datetime) and type(value).__name__ != "date"
+    )
+
+
+def _format_utc_iso(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
+
+
 def parse_epoch(text: str) -> datetime:
+    if not _is_str(text):
+        raise ValueError(f"epoch must be UTC ISO-8601 string with Z, got {text!r}")
     match = EPOCH_RE.match(text.strip())
     if not match:
         raise ValueError(f"epoch must be UTC ISO-8601 with Z, got {text!r}")
@@ -62,54 +100,88 @@ def parse_epoch(text: str) -> datetime:
     fraction = match.group(7) or ""
     micro = int((fraction + "000000")[:6]) if fraction else 0
     try:
-        return datetime(year, month, day, hour, minute, second, micro, tzinfo=timezone.utc)
+        return datetime(year, month, day, hour, minute, second, micro, tzinfo=UTC)
     except ValueError as exc:
         raise ValueError(f"invalid calendar epoch {text!r}: {exc}") from exc
 
 
-def _finite(value: float, label: str, limit: float) -> float:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+def _finite(value: object, label: str, limit: float) -> float:
+    if not _is_real_number(value):
         raise ValueError(f"{label}: numeric value required")
-    value = float(value)
-    if not math.isfinite(value):
+    numeric = float(value)
+    if not math.isfinite(numeric):
         raise ValueError(f"{label}: finite value required")
-    if abs(value) > limit:
-        raise ValueError(f"{label}: |{value}| exceeds supported bound {limit:g}")
-    return value
+    if abs(numeric) > limit:
+        raise ValueError(f"{label}: |{numeric}| exceeds supported bound {limit:g}")
+    return numeric
 
 
-def _state(epoch_text: str, values: list[str], index: int) -> State:
+def _state(epoch_text: str, values: Sequence[str], index: int) -> State:
     if len(values) != 6:
         raise ValueError(f"state vector {index}: expected six numbers, got {len(values)}")
     epoch = parse_epoch(epoch_text)
-    numbers = [_finite(float(token), f"state {index} component {i + 1}", MAX_ABS_POSITION_KM if i < 3 else MAX_ABS_VELOCITY_KMS)
-               for i, token in enumerate(values)]
-    return State(epoch, 0.0, tuple(numbers[:3]), tuple(numbers[3:]))
+    numbers: list[float] = []
+    for i, token in enumerate(values):
+        label = f"state {index} component {i + 1}"
+        limit = MAX_ABS_POSITION_KM if i < 3 else MAX_ABS_VELOCITY_KMS
+        try:
+            raw_float = float(token)
+        except ValueError as exc:
+            raise ValueError(f"{label}: invalid number {token!r}") from exc
+        numbers.append(_finite(raw_float, label, limit))
+    position: Vec3 = (numbers[0], numbers[1], numbers[2])
+    velocity: Vec3 = (numbers[3], numbers[4], numbers[5])
+    return State(epoch, 0.0, position, velocity)
 
 
-def _finalize(states: list[State], metadata: dict, provenance: str) -> Trajectory:
+def _finalize(
+    states: Sequence[State],
+    metadata: dict[str, str],
+    provenance: str,
+) -> Trajectory:
     if len(states) < MIN_VECTORS:
         raise ValueError(f"at least {MIN_VECTORS} state vectors are required, got {len(states)}")
-    ordered = sorted(states, key=lambda s: s.epoch)
-    for previous, current in zip(ordered, ordered[1:]):
+    for previous, current in itertools.pairwise(states):
         if current.epoch == previous.epoch:
             raise ValueError(f"duplicate epoch: {current.epoch.isoformat()}")
-    if ordered != states:
-        raise ValueError("state vectors must be in strictly increasing epoch order")
-    start = ordered[0].epoch
+        if current.epoch < previous.epoch:
+            raise ValueError("state vectors must be in strictly increasing epoch order")
+    start = states[0].epoch
     normalized = tuple(
         State(state.epoch, (state.epoch - start).total_seconds(), state.r, state.v)
-        for state in ordered
+        for state in states
     )
     span = normalized[-1].t_s
     if span <= 0:
         raise ValueError("trajectory span must be positive")
-    return Trajectory(metadata=metadata, provenance=provenance, states=normalized)
+    return Trajectory(metadata=dict(metadata), provenance=provenance, states=normalized)
 
 
-def parse_oem(text: str) -> Trajectory:
-    if len(text) > 5_000_000:
-        raise ValueError("OEM text exceeds 5 MB")
+def _record_oem_key_value(
+    line: str,
+    number: int,
+    metadata: dict[str, str],
+    seen_version: bool,
+    has_states: bool,
+) -> bool:
+    if has_states:
+        raise ValueError(f"line {number}: header or metadata after state vectors")
+    key, value = (part.strip() for part in line.split("=", 1))
+    if not key:
+        raise ValueError(f"line {number}: empty keyword")
+    if key == "CCSDS_OEM_VERS":
+        if seen_version:
+            raise ValueError(f"line {number}: duplicate CCSDS_OEM_VERS")
+        if value != "2.0":
+            raise ValueError(f"line {number}: only CCSDS_OEM_VERS 2.0 is supported, got {value}")
+        return True
+    if key in metadata:
+        raise ValueError(f"line {number}: duplicate metadata key {key}")
+    metadata[key] = value
+    return seen_version
+
+
+def _scan_oem_lines(text: str) -> tuple[dict[str, str], list[str], list[State]]:
     metadata: dict[str, str] = {}
     comments: list[str] = []
     states: list[State] = []
@@ -138,21 +210,9 @@ def parse_oem(text: str) -> Trajectory:
             in_meta = False
             continue
         if "=" in line:
-            if states:
-                raise ValueError(f"line {number}: header or metadata after state vectors")
-            key, value = (part.strip() for part in line.split("=", 1))
-            if not key:
-                raise ValueError(f"line {number}: empty keyword")
-            if key == "CCSDS_OEM_VERS":
-                if seen_version:
-                    raise ValueError(f"line {number}: duplicate CCSDS_OEM_VERS")
-                seen_version = True
-                if value != "2.0":
-                    raise ValueError(f"line {number}: only CCSDS_OEM_VERS 2.0 is supported, got {value}")
-                continue
-            if key in metadata:
-                raise ValueError(f"line {number}: duplicate metadata key {key}")
-            metadata[key] = value
+            seen_version = _record_oem_key_value(
+                line, number, metadata, seen_version, bool(states)
+            )
             continue
         if in_meta:
             raise ValueError(f"line {number}: metadata lines must use KEY = VALUE")
@@ -165,6 +225,10 @@ def parse_oem(text: str) -> Trajectory:
         raise ValueError("missing CCSDS_OEM_VERS = 2.0 header")
     if in_meta or not meta_blocks:
         raise ValueError("a single META_START/META_STOP block is required")
+    return metadata, comments, states
+
+
+def _validate_oem_metadata(metadata: dict[str, str]) -> None:
     for key in REQUIRED_META:
         if key not in metadata:
             raise ValueError(f"missing required metadata: {key}")
@@ -180,17 +244,31 @@ def parse_oem(text: str) -> Trajectory:
     if interpolation != "HERMITE":
         raise ValueError(f"unsupported INTERPOLATION: {interpolation} (only HERMITE)")
 
-    provenance = "unspecified"
-    for comment in comments:
-        match = re.match(r"PROVENANCE\s*:\s*(.+)$", comment, re.I)
-        if match:
-            provenance = match.group(1).strip()
-            break
 
+def _extract_provenance(comments: Sequence[str]) -> str:
+    for comment in comments:
+        match = PROVENANCE_RE.match(comment)
+        if match:
+            return match.group(1).strip()
+    return "unspecified"
+
+
+def parse_oem(text: str) -> Trajectory:
+    if not _is_str(text):
+        raise ValueError("OEM input must be a string")
+    if len(text) > MAX_INPUT_BYTES:
+        raise ValueError("OEM text exceeds 5 MB")
+    metadata, comments, states = _scan_oem_lines(text)
+    _validate_oem_metadata(metadata)
+    provenance = _extract_provenance(comments)
     return _finalize(states, metadata, provenance)
 
 
 def parse_csv(text: str) -> Trajectory:
+    if not _is_str(text):
+        raise ValueError("CSV input must be a string")
+    if len(text) > MAX_INPUT_BYTES:
+        raise ValueError("CSV text exceeds 5 MB")
     reader = csv.reader(io.StringIO(text))
     try:
         header = [cell.strip().lower() for cell in next(reader)]
@@ -205,7 +283,7 @@ def parse_csv(text: str) -> Trajectory:
         if len(row) != 7:
             raise ValueError(f"CSV row {index}: expected seven columns, got {len(row)}")
         states.append(_state(row[0].strip(), [cell.strip() for cell in row[1:]], len(states) + 1))
-    metadata = {
+    metadata: dict[str, str] = {
         "OBJECT_NAME": "SYNTHETIC_CSV_REPLAY",
         "OBJECT_ID": "SYNTHETIC-CSV",
         "CENTER_NAME": "EARTH",
@@ -217,10 +295,7 @@ def parse_csv(text: str) -> Trajectory:
 
 
 # ---------------------------------------------------------------- mechanics
-def interpolate(trajectory: Trajectory, t_s: float) -> State:
-    states = trajectory.states
-    if not states[0].t_s <= t_s <= states[-1].t_s:
-        raise ValueError(f"interpolation time {t_s} is outside [{states[0].t_s}, {states[-1].t_s}]")
+def _find_bracketing_span(states: tuple[State, ...], t_s: float) -> tuple[State, State]:
     low, high = 0, len(states) - 1
     while high - low > 1:
         middle = (low + high) // 2
@@ -228,31 +303,51 @@ def interpolate(trajectory: Trajectory, t_s: float) -> State:
             low = middle
         else:
             high = middle
-    left, right = states[low], states[high]
+    return states[low], states[high]
+
+
+def interpolate(trajectory: Trajectory, t_s: float) -> State:
+    if not _is_real_number(t_s) or not math.isfinite(float(t_s)):
+        raise ValueError(f"interpolation time must be a finite number, got {t_s!r}")
+    query_t = float(t_s)
+    states = trajectory.states
+    if len(states) < 2:
+        raise ValueError("trajectory requires at least two states for interpolation")
+    if not states[0].t_s <= query_t <= states[-1].t_s:
+        raise ValueError(
+            f"interpolation time {query_t} is outside [{states[0].t_s}, {states[-1].t_s}]"
+        )
+    left, right = _find_bracketing_span(states, query_t)
     span = right.t_s - left.t_s
     if span <= 0:
         raise ValueError("duplicate epochs cannot be interpolated")
-    s = (t_s - left.t_s) / span
+    s = (query_t - left.t_s) / span
     s2, s3 = s * s, s * s * s
     h00, h10 = 2 * s3 - 3 * s2 + 1, s3 - 2 * s2 + s
     h01, h11 = -2 * s3 + 3 * s2, s3 - s2
-    position = tuple(
-        h00 * left.r[i] + h10 * span * left.v[i] + h01 * right.r[i] + h11 * span * right.v[i]
-        for i in range(3)
+    lx, ly, lz = left.r
+    lvx, lvy, lvz = left.v
+    rx, ry, rz = right.r
+    rvx, rvy, rvz = right.v
+    position: Vec3 = (
+        h00 * lx + h10 * span * lvx + h01 * rx + h11 * span * rvx,
+        h00 * ly + h10 * span * lvy + h01 * ry + h11 * span * rvy,
+        h00 * lz + h10 * span * lvz + h01 * rz + h11 * span * rvz,
     )
     d00, d10 = (6 * s2 - 6 * s) / span, 3 * s2 - 4 * s + 1
     d01, d11 = (-6 * s2 + 6 * s) / span, 3 * s2 - 2 * s
-    velocity = tuple(
-        d00 * left.r[i] + d10 * left.v[i] + d01 * right.r[i] + d11 * right.v[i]
-        for i in range(3)
+    velocity: Vec3 = (
+        d00 * lx + d10 * lvx + d01 * rx + d11 * rvx,
+        d00 * ly + d10 * lvy + d01 * ry + d11 * rvy,
+        d00 * lz + d10 * lvz + d01 * rz + d11 * rvz,
     )
     epoch = left.epoch + (right.epoch - left.epoch) * s
-    return State(epoch, t_s, position, velocity)
+    return State(epoch, query_t, position, velocity)
 
 
 # ------------------------------------------------------- lunar ephemeris
 # Truncated ELP2000-82B terms (Meeus, Astronomical Algorithms, table 47.A/B).
-_LR_TERMS = (
+_LR_TERMS: tuple[tuple[int, int, int, int, int, int], ...] = (
     (0, 0, 1, 0, 6288774, -20905355), (2, 0, -1, 0, 1274027, -3699111),
     (2, 0, 0, 0, 658314, -2955968), (0, 0, 2, 0, 213618, -569925),
     (0, 1, 0, 0, -185116, 48888), (0, 0, 0, 2, -114332, -3149),
@@ -276,7 +371,7 @@ _LR_TERMS = (
     (2, 1, 1, 0, -810, 2616), (4, -1, -2, 0, 759, -1897),
     (0, 2, -1, 0, -713, -2117), (2, 2, -1, 0, -700, 2354),
 )
-_B_TERMS = (
+_B_TERMS: tuple[tuple[int, int, int, int, int], ...] = (
     (0, 0, 0, 1, 5128122), (0, 0, 1, 1, 280602), (0, 0, 1, -1, 277693),
     (2, 0, 0, -1, 173237), (2, 0, -1, 1, 55413), (2, 0, -1, -1, 46271),
     (2, 0, 0, 1, 32573), (0, 0, 2, 1, 17198), (2, 0, 1, -1, 9266),
@@ -288,23 +383,25 @@ _B_TERMS = (
     (0, 1, 1, -1, -1410), (0, 1, 0, -1, -1344), (1, 0, 0, -1, -1335),
     (0, 0, 3, 1, 1107), (4, 0, 0, -1, 1021), (4, 0, -1, 1, 833),
 )
+_J2000_EPOCH = datetime(2000, 1, 1, 12, tzinfo=UTC)
 
 
 def julian_date(moment: datetime) -> float:
+    if not _is_datetime_instance(moment):
+        raise ValueError("epoch must be a datetime instance")
     if moment.tzinfo is None:
         raise ValueError("epoch must be timezone-aware UTC")
-    moment = moment.astimezone(timezone.utc)
-    delta = moment - datetime(2000, 1, 1, 12, tzinfo=timezone.utc)
+    utc_moment = moment.astimezone(UTC)
+    delta = utc_moment - _J2000_EPOCH
     return 2451545.0 + delta.total_seconds() / 86400.0
 
 
-def moon_position_eme2000(moment: datetime) -> tuple[float, float, float]:
-    """Approximate geocentric lunar position in EME2000 (km).
+def _deg_to_rad_mod360(value: float) -> float:
+    return math.radians(value % 360.0)
 
-    Truncated ELP2000-82B series: expect kilometres-to-tens-of-kilometres
-    differences from JPL DE440. Not for navigation or occultation timing.
-    """
-    t = (julian_date(moment) - 2451545.0) / 36525.0
+
+def _lunar_ecliptic_spherical(t: float) -> tuple[float, float, float]:
+    """Compute J2000 ecliptic longitude (deg), latitude (deg), and range (km)."""
     lp = 218.3164477 + 481267.88123421 * t - 0.0015786 * t**2 + t**3 / 538841 - t**4 / 65194000
     d = 297.8501921 + 445267.1114034 * t - 0.0018819 * t**2 + t**3 / 545868 - t**4 / 113065000
     m = 357.5291092 + 35999.0502909 * t - 0.0001536 * t**2 + t**3 / 24490000
@@ -315,23 +412,29 @@ def moon_position_eme2000(moment: datetime) -> tuple[float, float, float]:
     a3 = 313.45 + 481266.484 * t
     e = 1.0 - 0.002516 * t - 0.0000074 * t**2
 
-    def radians(value: float) -> float:
-        return math.radians(value % 360.0)
-
     sum_l = sum_r = sum_b = 0.0
     for cd, cm, cmp, cf, coef_l, coef_r in _LR_TERMS:
-        argument = radians(cd * d + cm * m + cmp * mp + cf * f)
+        argument = _deg_to_rad_mod360(cd * d + cm * m + cmp * mp + cf * f)
         factor = e ** abs(cm)
         sum_l += coef_l * factor * math.sin(argument)
         sum_r += coef_r * factor * math.cos(argument)
     for cd, cm, cmp, cf, coef_b in _B_TERMS:
-        argument = radians(cd * d + cm * m + cmp * mp + cf * f)
+        argument = _deg_to_rad_mod360(cd * d + cm * m + cmp * mp + cf * f)
         sum_b += coef_b * (e ** abs(cm)) * math.sin(argument)
 
-    sum_l += 3958.0 * math.sin(radians(a1)) + 1962.0 * math.sin(radians(lp - f)) + 318.0 * math.sin(radians(a2))
-    sum_b += (-2235.0 * math.sin(radians(lp)) + 382.0 * math.sin(radians(a3))
-              + 175.0 * math.sin(radians(a1 - f)) + 175.0 * math.sin(radians(a1 + f))
-              + 127.0 * math.sin(radians(lp - mp)) - 115.0 * math.sin(radians(lp + mp)))
+    sum_l += (
+        3958.0 * math.sin(_deg_to_rad_mod360(a1))
+        + 1962.0 * math.sin(_deg_to_rad_mod360(lp - f))
+        + 318.0 * math.sin(_deg_to_rad_mod360(a2))
+    )
+    sum_b += (
+        -2235.0 * math.sin(_deg_to_rad_mod360(lp))
+        + 382.0 * math.sin(_deg_to_rad_mod360(a3))
+        + 175.0 * math.sin(_deg_to_rad_mod360(a1 - f))
+        + 175.0 * math.sin(_deg_to_rad_mod360(a1 + f))
+        + 127.0 * math.sin(_deg_to_rad_mod360(lp - mp))
+        - 115.0 * math.sin(_deg_to_rad_mod360(lp + mp))
+    )
 
     longitude = (lp + sum_l / 1_000_000.0) % 360.0
     latitude = sum_b / 1_000_000.0
@@ -342,9 +445,19 @@ def moon_position_eme2000(moment: datetime) -> tuple[float, float, float]:
     # drifts by general precession (~0.36 degrees by 2026).
     precession_arcsec = 5029.0966 * t + 1.11113 * t**2 - 0.000006 * t**3
     longitude = (longitude - precession_arcsec / 3600.0) % 360.0
+    return longitude, latitude, distance
 
-    beta = radians(latitude)
-    lam = radians(longitude)
+
+def moon_position_eme2000(moment: datetime) -> Vec3:
+    """Approximate geocentric lunar position in EME2000 (km).
+
+    Truncated ELP2000-82B series: expect kilometres-to-tens-of-kilometres
+    differences from JPL DE440. Not for navigation or occultation timing.
+    """
+    t = (julian_date(moment) - 2451545.0) / 36525.0
+    longitude, latitude, distance = _lunar_ecliptic_spherical(t)
+    beta = _deg_to_rad_mod360(latitude)
+    lam = _deg_to_rad_mod360(longitude)
     x_ecl = distance * math.cos(beta) * math.cos(lam)
     y_ecl = distance * math.cos(beta) * math.sin(lam)
     z_ecl = distance * math.sin(beta)
@@ -356,18 +469,18 @@ def moon_position_eme2000(moment: datetime) -> tuple[float, float, float]:
     )
 
 
-def telemetry(state: State) -> dict:
-    r = state.r
-    v = state.v
-    r_earth = math.sqrt(sum(component * component for component in r))
-    speed = math.sqrt(sum(component * component for component in v))
+def telemetry(state: State) -> dict[str, Any]:
+    rx, ry, rz = state.r
+    vx, vy, vz = state.v
+    r_earth = math.sqrt(rx * rx + ry * ry + rz * rz)
+    speed = math.sqrt(vx * vx + vy * vy + vz * vz)
     moon = moon_position_eme2000(state.epoch)
-    dx, dy, dz = r[0] - moon[0], r[1] - moon[1], r[2] - moon[2]
+    dx, dy, dz = rx - moon[0], ry - moon[1], rz - moon[2]
     r_moon = math.sqrt(dx * dx + dy * dy + dz * dz)
     if r_earth <= 0:
         raise ValueError("degenerate geometry: zero Earth distance")
     energy = 0.5 * speed * speed - MU_EARTH_KM3_S2 / r_earth
-    radial = sum(r[i] * v[i] for i in range(3)) / r_earth
+    radial = (rx * vx + ry * vy + rz * vz) / r_earth
     return {
         "earth_distance_km": r_earth,
         "earth_altitude_km": r_earth - R_EARTH_KM,
@@ -380,18 +493,23 @@ def telemetry(state: State) -> dict:
     }
 
 
-def build_track(trajectory: Trajectory, points: int = 600) -> list[dict]:
-    if points < 2:
-        raise ValueError("track needs at least two points")
+def _validate_track_points(points: object) -> int:
+    if not _is_exact_int(points) or not MIN_TRACK_POINTS <= points <= MAX_TRACK_POINTS:
+        raise ValueError(f"track needs {MIN_TRACK_POINTS}..{MAX_TRACK_POINTS} integer points")
+    return points
+
+
+def build_track(trajectory: Trajectory, points: int = 600) -> list[dict[str, Any]]:
+    count = _validate_track_points(points)
     start, end = trajectory.states[0].t_s, trajectory.states[-1].t_s
-    track = []
-    for index in range(points):
-        t_s = start + (end - start) * index / (points - 1)
+    track: list[dict[str, Any]] = []
+    for index in range(count):
+        t_s = start + (end - start) * index / (count - 1)
         state = interpolate(trajectory, t_s)
         metrics = telemetry(state)
         track.append({
             "t_s": t_s,
-            "epoch": state.epoch.isoformat().replace("+00:00", "Z"),
+            "epoch": _format_utc_iso(state.epoch),
             "position_km": list(state.r),
             "velocity_kms": list(state.v),
             "moon_position_km": metrics.pop("moon_position_km"),
@@ -400,30 +518,61 @@ def build_track(trajectory: Trajectory, points: int = 600) -> list[dict]:
     return track
 
 
-def summarize(trajectory: Trajectory) -> dict:
+def summarize(trajectory: Trajectory) -> dict[str, Any]:
     measured = [telemetry(state) for state in trajectory.states]
-    speeds = [item["speed_kms"] for item in measured]
-    earth_distances = [item["earth_distance_km"] for item in measured]
-    earth_altitudes = [item["earth_altitude_km"] for item in measured]
-    moon_altitudes = [item["moon_altitude_km"] for item in measured]
-    energies = [item["earth_two_body_energy_km2_s2"] for item in measured]
+    speeds = [float(item["speed_kms"]) for item in measured]
+    earth_distances = [float(item["earth_distance_km"]) for item in measured]
+    earth_altitudes = [float(item["earth_altitude_km"]) for item in measured]
+    moon_altitudes = [float(item["moon_altitude_km"]) for item in measured]
+    energies = [float(item["earth_two_body_energy_km2_s2"]) for item in measured]
+    min_moon_alt = min(moon_altitudes)
+    flyby_state = trajectory.states[moon_altitudes.index(min_moon_alt)]
     return {
         "vector_count": len(trajectory.states),
-        "start_epoch": trajectory.states[0].epoch.isoformat().replace("+00:00", "Z"),
-        "end_epoch": trajectory.states[-1].epoch.isoformat().replace("+00:00", "Z"),
+        "start_epoch": _format_utc_iso(trajectory.states[0].epoch),
+        "end_epoch": _format_utc_iso(trajectory.states[-1].epoch),
         "duration_s": trajectory.states[-1].t_s,
         "duration_days": trajectory.states[-1].t_s / 86400.0,
         "tli_speed_kms": speeds[0],
         "max_earth_distance_km": max(earth_distances),
         "min_earth_altitude_km": min(earth_altitudes),
-        "min_moon_altitude_km": min(moon_altitudes),
+        "min_moon_altitude_km": min_moon_alt,
         "max_speed_kms": max(speeds),
         "min_speed_kms": min(speeds),
         "earth_two_body_energy_min_km2_s2": min(energies),
         "earth_two_body_energy_max_km2_s2": max(energies),
         "earth_two_body_energy_spread_km2_s2": max(energies) - min(energies),
-        "closest_lunar_flyby_epoch": trajectory.states[moon_altitudes.index(min(moon_altitudes))].epoch.isoformat().replace("+00:00", "Z"),
+        "closest_lunar_flyby_epoch": _format_utc_iso(flyby_state.epoch),
     }
+
+
+def _midpoint(a: Vec3, b: Vec3) -> Vec3:
+    return ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0)
+
+
+def _aabb_lower_distance_sq(curve: CubicCurve) -> float:
+    lower_squared = 0.0
+    for axis in range(3):
+        c0, c1, c2, c3 = curve[0][axis], curve[1][axis], curve[2][axis], curve[3][axis]
+        low = min(c0, c1, c2, c3)
+        high = max(c0, c1, c2, c3)
+        nearest = low if low > 0 else high if high < 0 else 0.0
+        lower_squared += nearest * nearest
+    return lower_squared
+
+
+def _norm_sq(point: Vec3) -> float:
+    return point[0] * point[0] + point[1] * point[1] + point[2] * point[2]
+
+
+def _subdivide_bezier(curve: CubicCurve) -> tuple[CubicCurve, CubicCurve]:
+    a = _midpoint(curve[0], curve[1])
+    b = _midpoint(curve[1], curve[2])
+    c = _midpoint(curve[2], curve[3])
+    d = _midpoint(a, b)
+    e = _midpoint(b, c)
+    f = _midpoint(d, e)
+    return (curve[0], a, d, f), (f, e, c, curve[3])
 
 
 def earth_segment_clear(left: State, right: State) -> bool:
@@ -433,41 +582,44 @@ def earth_segment_clear(left: State, right: State) -> bool:
     unresolved near-tangent case fails closed after bounded subdivision.
     """
     dt = right.t_s - left.t_s
-    controls = [left.r, tuple(left.r[i] + dt * left.v[i] / 3 for i in range(3)),
-                tuple(right.r[i] - dt * right.v[i] / 3 for i in range(3)), right.r]
-    radius = R_EARTH_KM + MIN_CLEARANCE_KM
-    stack = [(controls, 0)]
+    c1: Vec3 = (
+        left.r[0] + dt * left.v[0] / 3.0,
+        left.r[1] + dt * left.v[1] / 3.0,
+        left.r[2] + dt * left.v[2] / 3.0,
+    )
+    c2: Vec3 = (
+        right.r[0] - dt * right.v[0] / 3.0,
+        right.r[1] - dt * right.v[1] / 3.0,
+        right.r[2] - dt * right.v[2] / 3.0,
+    )
+    controls: CubicCurve = (left.r, c1, c2, right.r)
+    radius_sq = (R_EARTH_KM + MIN_CLEARANCE_KM) ** 2
+    stack: list[tuple[CubicCurve, int]] = [(controls, 0)]
     visits = 0
-    def midpoint(a, b):
-        return tuple((a[i] + b[i]) / 2 for i in range(3))
     while stack:
         curve, depth = stack.pop()
         visits += 1
-        lower_squared = 0.0
-        for axis in range(3):
-            low, high = min(p[axis] for p in curve), max(p[axis] for p in curve)
-            nearest = low if low > 0 else high if high < 0 else 0.0
-            lower_squared += nearest * nearest
-        if lower_squared > radius * radius + 1e-6:
+        if _aabb_lower_distance_sq(curve) > radius_sq + 1e-6:
             continue
-        if any(sum(value * value for value in p) < radius * radius for p in [curve[0], curve[-1]]):
+        if _norm_sq(curve[0]) < radius_sq or _norm_sq(curve[3]) < radius_sq:
             return False
         if depth >= 24 or visits >= 100_000:
             return False
-        a, b, c = midpoint(curve[0], curve[1]), midpoint(curve[1], curve[2]), midpoint(curve[2], curve[3])
-        d, e = midpoint(a, b), midpoint(b, c)
-        f = midpoint(d, e)
-        stack.extend([([curve[0], a, d, f], depth + 1), ([f, e, c, curve[3]], depth + 1)])
+        left_sub, right_sub = _subdivide_bezier(curve)
+        stack.extend([(left_sub, depth + 1), (right_sub, depth + 1)])
     return True
 
 
-def gates(trajectory: Trajectory) -> dict:
+def gates(trajectory: Trajectory) -> dict[str, Any]:
     summary = summarize(trajectory)
-    failures = []
+    failures: list[str] = []
     if summary["min_earth_altitude_km"] < MIN_CLEARANCE_KM:
         failures.append(f"Earth clearance below {MIN_CLEARANCE_KM:g} km")
-    elif not all(earth_segment_clear(left, right) for left, right in zip(trajectory.states, trajectory.states[1:])):
-        failures.append('Earth clearance not certified between OEM nodes')
+    elif not all(
+        earth_segment_clear(left, right)
+        for left, right in itertools.pairwise(trajectory.states)
+    ):
+        failures.append("Earth clearance not certified between OEM nodes")
     if summary["min_moon_altitude_km"] < MIN_CLEARANCE_KM:
         failures.append(f"lunar clearance below {MIN_CLEARANCE_KM:g} km")
     return {
@@ -475,14 +627,14 @@ def gates(trajectory: Trajectory) -> dict:
         "failures": failures,
         "earth_clearance_km": MIN_CLEARANCE_KM,
         "lunar_clearance_km": MIN_CLEARANCE_KM,
-        "earth_coverage": 'Entire cubic Hermite spans using conservative convex-hull bounds; unresolved cases fail',
-        "moon_coverage": 'OEM nodes only; not continuous lunar collision clearance',
+        "earth_coverage": "Entire cubic Hermite spans using conservative convex-hull bounds; unresolved cases fail",
+        "moon_coverage": "OEM nodes only; not continuous lunar collision clearance",
         "meaning": "Kinematic teaching screen only. Lunar checks are sampled, not continuous. Not a collision probability or mission design review.",
     }
 
 
 def load_text(path: Path) -> str:
-    if path.stat().st_size > 5_000_000:
+    if path.stat().st_size > MAX_INPUT_BYTES:
         raise ValueError("input exceeds 5 MB")
     return path.read_text(encoding="utf-8")
 
@@ -494,15 +646,15 @@ def parse_file(path: Path) -> Trajectory:
     return parse_oem(text)
 
 
-def to_payload(trajectory: Trajectory, track_points: int = 600) -> dict:
+def to_payload(trajectory: Trajectory, track_points: int = 600) -> dict[str, Any]:
     track = build_track(trajectory, track_points)
-    samples = []
+    samples: list[dict[str, Any]] = []
     for state in trajectory.states:
         metrics = telemetry(state)
         moon = metrics.pop("moon_position_km")
         samples.append({
             "t_s": state.t_s,
-            "epoch": state.epoch.isoformat().replace("+00:00", "Z"),
+            "epoch": _format_utc_iso(state.epoch),
             "position_km": list(state.r),
             "velocity_kms": list(state.v),
             "moon_position_km": moon,
@@ -533,30 +685,44 @@ def to_payload(trajectory: Trajectory, track_points: int = 600) -> dict:
     }
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--oem", type=Path)
     source.add_argument("--csv", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--track-points", type=int, default=600)
-    arguments = parser.parse_args(argv)
-    source_path = arguments.oem or arguments.csv
-    if source_path.resolve() == arguments.out.resolve() or (
-        arguments.out.exists() and arguments.out.samefile(source_path)
-    ):
+    return parser
+
+
+def _is_same_path(source_path: Path, out_path: Path) -> bool:
+    if source_path.resolve() == out_path.resolve():
+        return True
+    try:
+        return out_path.exists() and source_path.exists() and out_path.samefile(source_path)
+    except OSError:
+        return False
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _build_arg_parser()
+    arguments = parser.parse_args(list(argv) if argv is not None else None)
+    source_path: Path = arguments.oem or arguments.csv
+    if _is_same_path(source_path, arguments.out):
         parser.error("output must differ from the source")
     try:
         trajectory = parse_file(source_path)
         payload = to_payload(trajectory, arguments.track_points)
+        arguments.out.parent.mkdir(parents=True, exist_ok=True)
+        arguments.out.write_text(
+            json.dumps(payload, indent=2, allow_nan=False) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
     except (ValueError, OSError, UnicodeError) as exc:
+        logger.error("CLI execution failed for %s: %s", source_path, exc)
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    arguments.out.parent.mkdir(parents=True, exist_ok=True)
-    arguments.out.write_text(
-        json.dumps(payload, indent=2, allow_nan=False) + "\n",
-        encoding="utf-8", newline="\n",
-    )
     summary = payload["summary"]
     print(json.dumps({
         "gates": payload["gates"]["status"],

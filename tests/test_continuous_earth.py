@@ -1,10 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import cislunar_ephemeris as ce
 
 
 def state(t, x, vx=0):
-    return ce.State(datetime(2026, 4, 2, tzinfo=timezone.utc) + timedelta(seconds=t), t, (x, 0, 0), (vx, 0, 0))
+    return ce.State(datetime(2026, 4, 2, tzinfo=UTC) + timedelta(seconds=t), t, (x, 0, 0), (vx, 0, 0))
 
 
 def test_endpoints_safe_but_hermite_interior_hits_earth():

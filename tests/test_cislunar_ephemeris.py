@@ -9,7 +9,7 @@ import json
 import math
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -17,12 +17,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import cislunar_ephemeris as ce  # noqa: E402
+import cislunar_ephemeris as ce
 
 OEM = ROOT / "fixtures" / "synthetic_free_return.oem"
 CSV = ROOT / "fixtures" / "synthetic_free_return.csv"
 SCRIPT = ROOT / "cislunar_ephemeris.py"
-BASE = datetime(2026, 4, 2, tzinfo=timezone.utc)
+BASE = datetime(2026, 4, 2, tzinfo=UTC)
 
 
 def iso(days: float = 0.0) -> str:
@@ -248,8 +248,8 @@ def test_interpolation_keeps_epoch_consistent():
 
 # ---------------------------------------------------------------- lunar ephemeris
 def test_lunar_distance_stays_in_physical_range():
-    for day in range(0, 28):
-        moment = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=day)
+    for day in range(28):
+        moment = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(days=day)
         x, y, z = ce.moon_position_eme2000(moment)
         distance = math.sqrt(x * x + y * y + z * z)
         assert 356_000.0 <= distance <= 407_000.0
@@ -269,7 +269,7 @@ def test_lunar_ephemeris_is_deterministic():
 def test_lunar_ephemeris_matches_a_horizons_spot_check():
     # JPL Horizons, Moon 301, geocentric ICRF, 2026-Apr-02 00:00 TDB.
     reference = (-385833.8066617213, -60038.52669098664, -46890.7172753297)
-    ours = ce.moon_position_eme2000(datetime(2026, 4, 2, tzinfo=timezone.utc))
+    ours = ce.moon_position_eme2000(datetime(2026, 4, 2, tzinfo=UTC))
     assert math.dist(ours, reference) < 100.0
 
 
@@ -345,7 +345,13 @@ def test_gate_fails_for_lunar_impact():
 
 # ---------------------------------------------------------------- CLI
 def run_cli(*arguments: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(SCRIPT), *arguments], cwd=ROOT, capture_output=True, text=True)
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *arguments],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_cli_writes_payload_and_exits_zero(tmp_path):
