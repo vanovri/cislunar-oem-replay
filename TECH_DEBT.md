@@ -29,6 +29,33 @@ All items below are verified against the current repository source files on disk
      failures: list[str] = []
      if summary["min_earth_altitude_km"] < MIN_CLEARANCE_KM:
          failures.append(f"Earth clearance below {MIN_CLEARANCE_KM:g} km")
+@@ -647,6 +648,7 @@
+ 
+ 
+ def to_payload(trajectory: Trajectory, track_points: int = 600) -> dict[str, Any]:
++    summary = summarize(trajectory)
+     track = build_track(trajectory, track_points)
+     samples: list[dict[str, Any]] = []
+     for state in trajectory.states:
+@@ -667,8 +669,8 @@
+             "notice": "Synthetic teaching profile unless stated otherwise; not an authenticated NASA product.",
+         },
+         "metadata": trajectory.metadata,
+-        "summary": summarize(trajectory),
+-        "gates": gates(trajectory),
++        "summary": summary,
++        "gates": gates(trajectory, summary),
+         "samples": samples,
+         "track": track,
+         "interpolation": {
+@@ -683,6 +685,7 @@
+             "radius_moon_km": R_MOON_KM,
+         },
+     }
++
+ 
+ 
+ def _build_arg_parser() -> argparse.ArgumentParser:
 ```
 
 ### Verification
