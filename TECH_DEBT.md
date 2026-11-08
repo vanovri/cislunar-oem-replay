@@ -1,5 +1,7 @@
 # Technical Debt & Performance Ledger — `cislunar-oem-replay`
 
+Crosschecked 2026-11-08 WIB. All code diffs below are proposal-only and have not changed production source. Source references and removed patch lines were checked against this working tree. Runtime speedups remain unmeasured unless evidence is explicitly cited.
+
 All items below are verified against the current repository source files on disk with exact 1-based line numbers. Production code has not been speculatively modified.
 
 ---
@@ -15,6 +17,7 @@ All items below are verified against the current repository source files on disk
 
 ### Proposed Patch (`diff`)
 ```diff
+diff --git a/cislunar_ephemeris.py b/cislunar_ephemeris.py
 --- a/cislunar_ephemeris.py
 +++ b/cislunar_ephemeris.py
 @@ -610,8 +610,9 @@
@@ -74,6 +77,7 @@ Run `C:\Python314\python.exe -m pytest -q` and confirm `to_payload()` output is 
 
 ### Proposed Patch (`diff`)
 ```diff
+diff --git a/cislunar_ephemeris.py b/cislunar_ephemeris.py
 --- a/cislunar_ephemeris.py
 +++ b/cislunar_ephemeris.py
 @@ -413,14 +413,15 @@

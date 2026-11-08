@@ -2,7 +2,7 @@
 
 ## 1. Branch & Git Safety Summary
 
-- **Repository:** `C:\Users\ardhy\Projects\cislunar-oem-replay`
+- **Repository:** `.`
 - **Original Branch:** `main`
 - **Target Branch:** `codex/auto-refactor-and-tests`
 - **Backup Snapshot Stash:** Pre-existing untracked analysis artifacts (`ARCHITECTURE.md`, `TECH_DEBT.md`, `graphify-out/`) were preserved via `git stash push --include-untracked -m "pre-refactor-backup-snapshot"` before branching and kept out of the committed refactoring changeset.
