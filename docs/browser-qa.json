@@ -1,6 +1,6 @@
 {
   "viewer": "cislunar_replay.html",
-  "viewer_sha256": "e2d49c29c17d47cdee42fd7bc070f06b66c74de9625857c5a3223887ec57377e",
+  "viewer_sha256": "6b1729346f6f57b2382a6d076c5b93df2f9760d19ede675b434a9cac622a8acb",
   "viewport": {
     "width": 1440,
     "height": 900
@@ -27,7 +27,7 @@
     "index": 300,
     "t_s": 398103.506,
     "met": "T+ 4d 14h 35m",
-    "phase": "Lunar flyby · closest 8,359 km altitude",
+    "phase": "Lunar flyby \u00b7 closest 8,359 km altitude",
     "earth": "414,753km",
     "moon": "10,096km"
   },
